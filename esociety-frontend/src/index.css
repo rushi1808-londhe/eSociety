@@ -1,0 +1,85 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Segoe UI', sans-serif;
+  background-color: #f1f5f9;
+  margin: 0;
+}
+
+/* ===== SIDEBAR ===== */
+.sidebar {
+  width: 260px;
+  min-height: 100vh;
+  background-color: #272757;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  transition: width 0.3s ease;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar.collapsed {
+  width: 60px;
+}
+
+.sidebar.collapsed .link-text,
+.sidebar.collapsed .sidebar-brand-text,
+.sidebar.collapsed .user-info {
+  display: none;
+}
+
+/* Sidebar Links */
+.sidebar-link {
+  border-left: 3px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.sidebar-link:hover {
+  background-color: #505081 !important;
+  border-left: 3px solid #8686AC;
+  color: #fff !important;
+}
+
+.sidebar-link.active {
+  background-color: #0F0E47 !important;
+  border-left: 3px solid #fff;
+  color: #fff !important;
+}
+
+/* ===== MAIN CONTENT ===== */
+.main-content {
+  margin-left: 260px;
+  min-height: 100vh;
+  transition: margin-left 0.3s ease;
+}
+
+.main-content.expanded {
+  margin-left: 60px;
+}
+
+/* ===== MOBILE ===== */
+@media (max-width: 768px) {
+  .sidebar {
+    left: -260px;
+  }
+
+  .sidebar.mobile-open {
+    left: 0;
+  }
+
+  .main-content {
+    margin-top: 60px;
+  }
+
+}
+
+/* ===== LOGIN ===== */
+.login-wrapper {
+  background: linear-gradient(135deg, #0F0E47, #272757, #505081);
+  min-height: 100vh;
+}
