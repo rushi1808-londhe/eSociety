@@ -1,25 +1,30 @@
 import React, { useState, useEffect } from 'react'
 import { toast } from 'react-toastify'
 
-export default function MyPayments() {
+export default function ManagePayments() {
     let user = JSON.parse(localStorage.getItem("user"))
     let token = localStorage.getItem("token")
     let [payments, setPayments] = useState([])
+    let [filterStatus, setFilterStatus] = useState("")
     let [downloadingId, setDownloadingId] = useState(null)
 
+    let filteredPayments = payments.filter(p => filterStatus === "" || p.status === filterStatus)
+
     async function fetchPayments() {
-        let responseObject = await fetch(`http://localhost:8080/api/v1/resident/payments/${user.userId}`, {
+        let responseObject = await fetch(`http://localhost:8080/api/v1/admin/payment/all/${user.societyId}`, {
             headers: { Authorization: `Bearer ${token}` }
         })
         let responseData = await responseObject.json()
         if (responseData.data) setPayments(responseData.data)
     }
 
+    useEffect(() => { fetchPayments() }, [])
+
     async function downloadReceipt(paymentId) {
         setDownloadingId(paymentId)
         try {
             let response = await fetch(
-                `http://localhost:8080/api/v1/resident/payments/${user.userId}/receipt/${paymentId}`,
+                `http://localhost:8080/api/v1/admin/payment/${user.societyId}/receipt/${paymentId}`,
                 { headers: { Authorization: `Bearer ${token}` } }
             )
             if (!response.ok) {
@@ -42,13 +47,27 @@ export default function MyPayments() {
         }
     }
 
-    useEffect(() => {
-        fetchPayments()
-    }, [])
-
     return (
         <div>
-            <h5 className="fw-bold mb-4">My Payments</h5>
+            <div className="mb-4">
+                <div className="d-flex justify-content-between align-items-center mb-3">
+                    <h5 className="fw-bold mb-0">Payments</h5>
+                </div>
+                <div className="row g-2 align-items-center">
+                    <div className="col-12 col-md-3">
+                        <select className="form-select form-select-sm rounded-3"
+                            value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value) }}>
+                            <option value="">All Status</option>
+                            <option value="SUCCESS">Success</option>
+                            <option value="PENDING">Pending</option>
+                            <option value="FAILED">Failed</option>
+                        </select>
+                    </div>
+                    <div className="col-auto">
+                        <span className="small text-secondary">Showing {filteredPayments.length} of {payments.length}</span>
+                    </div>
+                </div>
+            </div>
 
             <div className="card border-0 shadow-sm rounded-4">
                 <div className="table-responsive">
@@ -56,7 +75,8 @@ export default function MyPayments() {
                         <thead style={{ background: "#f0f4ff" }}>
                             <tr>
                                 <th className="py-3 ps-4 small">#</th>
-                                <th className="py-3 small">Bill ID</th>
+                                <th className="py-3 small">Resident</th>
+                                <th className="py-3 small">Flat</th>
                                 <th className="py-3 small">Amount Paid</th>
                                 <th className="py-3 small">Payment Date</th>
                                 <th className="py-3 small">Status</th>
@@ -64,14 +84,15 @@ export default function MyPayments() {
                             </tr>
                         </thead>
                         <tbody className="table-group-divider">
-                            {payments.length === 0 ?
-                                <tr><td colSpan="6" className="text-center text-secondary py-4 small">No payments found</td></tr>
+                            {filteredPayments.length === 0 ?
+                                <tr><td colSpan="7" className="text-center text-secondary py-4 small">No payments found</td></tr>
                                 :
-                                payments.map((p, index) => {
+                                filteredPayments.map((p, index) => {
                                     return (
                                         <tr key={p.paymentId}>
                                             <td className="ps-4 small">{index + 1}</td>
-                                            <td className="small">{p.billId}</td>
+                                            <td className="small fw-semibold">{p.residentName || "—"}</td>
+                                            <td className="small">{p.flatNumber || "—"}</td>
                                             <td className="small fw-semibold">₹{p.amountPaid}</td>
                                             <td className="small">{p.paymentDate}</td>
                                             <td>

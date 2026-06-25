@@ -34,6 +34,10 @@ public class AdminService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final UniversalResponse universalResponse;
+    private final PaymentRepository paymentRepository;
+    private final LateFeeRuleRepository lateFeeRuleRepository;
+    private final ExpenseRepository expenseRepository;
+    private final LateFeeService lateFeeService;
 
     // ===== DASHBOARD =====
     public ResponseEntity<?> getDashboardStats(Long societyId) {
@@ -47,13 +51,36 @@ public class AdminService {
             long unpaidBills = maintenanceBillRepository.findBySocietyId(societyId)
                     .stream().filter(b -> b.getStatus() == BillStatus.UNPAID).count();
 
-            Map<String, Long> stats = new HashMap<>();
+            LocalDate now = LocalDate.now();
+            double monthlyIncome = paymentRepository.findBySocietyId(societyId).stream()
+                    .filter(p -> p.getStatus() == com.esociety.backend.enums.PaymentStatus.SUCCESS)
+                    .filter(p -> {
+                        try {
+                            LocalDate d = LocalDate.parse(p.getPaymentDate());
+                            return d.getYear() == now.getYear() && d.getMonthValue() == now.getMonthValue();
+                        } catch (Exception e) { return false; }
+                    })
+                    .mapToDouble(Payment::getAmountPaid).sum();
+
+            double monthlyExpense = expenseRepository.findBySocietyId(societyId).stream()
+                    .filter(e -> {
+                        try {
+                            LocalDate d = LocalDate.parse(e.getExpenseDate());
+                            return d.getYear() == now.getYear() && d.getMonthValue() == now.getMonthValue();
+                        } catch (Exception ex) { return false; }
+                    })
+                    .mapToDouble(Expense::getAmount).sum();
+
+            Map<String, Object> stats = new HashMap<>();
             stats.put("totalBuildings", totalBuildings);
             stats.put("totalFlats", totalFlats);
             stats.put("totalResidents", totalResidents);
             stats.put("totalComplaints", totalComplaints);
             stats.put("openComplaints", openComplaints);
             stats.put("unpaidBills", unpaidBills);
+            stats.put("monthlyIncome", monthlyIncome);
+            stats.put("monthlyExpense", monthlyExpense);
+            stats.put("monthlyProfitOrLoss", monthlyIncome - monthlyExpense);
 
             return universalResponse.send("Stats fetched successfully", stats, HttpStatus.OK);
         } catch (Exception e) {
@@ -339,8 +366,11 @@ public class AdminService {
     }
 
     // ===== MAINTENANCE BILLS =====
-    public ResponseEntity<?> generateBills(Long societyId, Integer month, Integer year) {
+    public ResponseEntity<?> generateBills(Long societyId, Integer month, Integer year, String dueDate) {
         try {
+            if (dueDate == null || dueDate.isBlank()) {
+                return universalResponse.send("Due date is required", null, HttpStatus.BAD_REQUEST);
+            }
             List<Flat> flats = flatRepository.findBySocietyId(societyId);
             int generated = 0;
             for (Flat flat : flats) {
@@ -375,6 +405,8 @@ public class AdminService {
                 bill.setFlatCharge(rate.get().getFlatCharge());
                 bill.setParkingCharge(parkingCharge);
                 bill.setTotalAmount(rate.get().getFlatCharge() + parkingCharge);
+                bill.setDueDate(dueDate);
+                bill.setLateFee(0.0);
                 bill.setStatus(BillStatus.UNPAID);
                 maintenanceBillRepository.save(bill);
                 generated++;
@@ -388,6 +420,7 @@ public class AdminService {
     public ResponseEntity<?> getAllBills(Long societyId) {
         try {
             List<MaintenanceBill> bills = maintenanceBillRepository.findBySocietyId(societyId);
+            lateFeeService.applyLateFees(bills, societyId);
             List<Map<String, Object>> result = bills.stream().map(bill -> {
                 Map<String, Object> map = new HashMap<>();
                 map.put("billId", bill.getBillId());
@@ -396,7 +429,9 @@ public class AdminService {
                 map.put("billYear", bill.getBillYear());
                 map.put("flatCharge", bill.getFlatCharge());
                 map.put("parkingCharge", bill.getParkingCharge());
+                map.put("lateFee", bill.getLateFee());
                 map.put("totalAmount", bill.getTotalAmount());
+                map.put("dueDate", bill.getDueDate());
                 map.put("status", bill.getStatus());
                 Optional<Flat> flat = flatRepository.findById(bill.getFlatId());
                 flat.ifPresent(f -> map.put("flatNumber", f.getFlatNumber()));
@@ -485,6 +520,170 @@ public class AdminService {
             userRepository.save(user);
             String message = user.getIsActive() ? "Resident activated" : "Resident deactivated";
             return universalResponse.send(message, user.getIsActive(), HttpStatus.OK);
+        } catch (Exception e) {
+            return universalResponse.send("Something went wrong: " + e.getMessage(), null, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    // ===== PAYMENTS =====
+    public ResponseEntity<?> getAllPayments(Long societyId) {
+        try {
+            List<Payment> payments = paymentRepository.findBySocietyId(societyId);
+            List<Map<String, Object>> result = payments.stream().map(payment -> {
+                Map<String, Object> map = new HashMap<>();
+                map.put("paymentId", payment.getPaymentId());
+                map.put("billId", payment.getBillId());
+                map.put("amountPaid", payment.getAmountPaid());
+                map.put("paymentDate", payment.getPaymentDate());
+                map.put("status", payment.getStatus());
+
+                residentRepository.findById(payment.getResidentId()).ifPresent(resident -> {
+                    userRepository.findById(resident.getUserId()).ifPresent(u -> map.put("residentName", u.getName()));
+                    flatRepository.findById(resident.getFlatId()).ifPresent(f -> map.put("flatNumber", f.getFlatNumber()));
+                });
+
+                return map;
+            }).toList();
+            return universalResponse.send("Payments fetched successfully", result, HttpStatus.OK);
+        } catch (Exception e) {
+            return universalResponse.send("Something went wrong: " + e.getMessage(), null, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    public Payment getOwnedPayment(Long societyId, Long paymentId) {
+        Payment payment = paymentRepository.findById(paymentId)
+                .orElseThrow(() -> new RuntimeException("Payment not found"));
+        if (!payment.getSocietyId().equals(societyId)) {
+            throw new RuntimeException("This payment does not belong to your society");
+        }
+        return payment;
+    }
+
+    // ===== LATE FEE LOGIC =====
+    // Delegates to the shared LateFeeService so Admin and Resident sides stay in sync.
+
+    public ResponseEntity<?> saveLateFeeRule(Long societyId, Double flatAmount) {
+        try {
+            LateFeeRule rule = lateFeeRuleRepository.findBySocietyId(societyId)
+                    .orElse(new LateFeeRule());
+            rule.setSocietyId(societyId);
+            rule.setFlatAmount(flatAmount);
+            rule.setIsActive(true);
+            lateFeeRuleRepository.save(rule);
+            return universalResponse.send("Late fee rule saved successfully", rule, HttpStatus.OK);
+        } catch (Exception e) {
+            return universalResponse.send("Something went wrong: " + e.getMessage(), null, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    public ResponseEntity<?> getLateFeeRule(Long societyId) {
+        try {
+            Optional<LateFeeRule> rule = lateFeeRuleRepository.findBySocietyId(societyId);
+            return universalResponse.send("Late fee rule fetched successfully", rule.orElse(null), HttpStatus.OK);
+        } catch (Exception e) {
+            return universalResponse.send("Something went wrong: " + e.getMessage(), null, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    // ===== EXPENSES =====
+    public ResponseEntity<?> addExpense(Long societyId, String category, String description, Double amount, String expenseDate, Long recordedByAdminId) {
+        try {
+            if (category == null || category.isBlank()) {
+                return universalResponse.send("Category is required", null, HttpStatus.BAD_REQUEST);
+            }
+            if (amount == null || amount <= 0) {
+                return universalResponse.send("Amount must be greater than zero", null, HttpStatus.BAD_REQUEST);
+            }
+            Expense expense = new Expense();
+            expense.setSocietyId(societyId);
+            expense.setCategory(category.trim());
+            expense.setDescription(description);
+            expense.setAmount(amount);
+            expense.setExpenseDate(expenseDate != null && !expenseDate.isBlank() ? expenseDate : LocalDate.now().toString());
+            expense.setRecordedByAdminId(recordedByAdminId);
+            expenseRepository.save(expense);
+            return universalResponse.send("Expense recorded successfully", expense, HttpStatus.CREATED);
+        } catch (Exception e) {
+            return universalResponse.send("Something went wrong: " + e.getMessage(), null, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    public ResponseEntity<?> getAllExpenses(Long societyId) {
+        try {
+            List<Expense> expenses = expenseRepository.findBySocietyId(societyId);
+            return universalResponse.send("Expenses fetched successfully", expenses, HttpStatus.OK);
+        } catch (Exception e) {
+            return universalResponse.send("Something went wrong: " + e.getMessage(), null, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    public ResponseEntity<?> deleteExpense(Long expenseId) {
+        try {
+            if (!expenseRepository.existsById(expenseId)) {
+                return universalResponse.send("Expense not found", null, HttpStatus.NOT_FOUND);
+            }
+            expenseRepository.deleteById(expenseId);
+            return universalResponse.send("Expense deleted successfully", true, HttpStatus.OK);
+        } catch (Exception e) {
+            return universalResponse.send("Something went wrong: " + e.getMessage(), null, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    // ===== REVENUE / PROFIT & LOSS =====
+    // Income = sum of SUCCESS payments (incl. late fees collected, since they're paid into amountPaid via the bill total)
+    // Expense = sum of recorded expenses
+    // Grouped per month for the given year, plus a yearly total.
+    public ResponseEntity<?> getRevenueReport(Long societyId, Integer year) {
+        try {
+            List<Payment> payments = paymentRepository.findBySocietyId(societyId);
+            List<Expense> expenses = expenseRepository.findBySocietyId(societyId);
+
+            double[] monthlyIncome = new double[12];
+            double[] monthlyExpense = new double[12];
+
+            for (Payment p : payments) {
+                if (p.getStatus() != com.esociety.backend.enums.PaymentStatus.SUCCESS) continue;
+                try {
+                    LocalDate date = LocalDate.parse(p.getPaymentDate());
+                    if (date.getYear() == year) {
+                        monthlyIncome[date.getMonthValue() - 1] += p.getAmountPaid();
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            for (Expense e : expenses) {
+                try {
+                    LocalDate date = LocalDate.parse(e.getExpenseDate());
+                    if (date.getYear() == year) {
+                        monthlyExpense[date.getMonthValue() - 1] += e.getAmount();
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            String[] monthNames = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+            List<Map<String, Object>> monthlyBreakdown = new java.util.ArrayList<>();
+            double totalIncome = 0, totalExpense = 0;
+
+            for (int i = 0; i < 12; i++) {
+                Map<String, Object> row = new HashMap<>();
+                row.put("month", monthNames[i]);
+                row.put("monthNumber", i + 1);
+                row.put("income", monthlyIncome[i]);
+                row.put("expense", monthlyExpense[i]);
+                row.put("profitOrLoss", monthlyIncome[i] - monthlyExpense[i]);
+                monthlyBreakdown.add(row);
+                totalIncome += monthlyIncome[i];
+                totalExpense += monthlyExpense[i];
+            }
+
+            Map<String, Object> summary = new HashMap<>();
+            summary.put("year", year);
+            summary.put("totalIncome", totalIncome);
+            summary.put("totalExpense", totalExpense);
+            summary.put("netProfitOrLoss", totalIncome - totalExpense);
+            summary.put("monthlyBreakdown", monthlyBreakdown);
+
+            return universalResponse.send("Revenue report fetched successfully", summary, HttpStatus.OK);
         } catch (Exception e) {
             return universalResponse.send("Something went wrong: " + e.getMessage(), null, HttpStatus.INTERNAL_SERVER_ERROR);
         }

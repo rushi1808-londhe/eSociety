@@ -7,6 +7,7 @@ export default function ManageBills() {
     let [bills, setBills] = useState([])
     let [month, setMonth] = useState(new Date().getMonth() + 1)
     let [year, setYear] = useState(new Date().getFullYear())
+    let [dueDate, setDueDate] = useState("")
     let [filterStatus, setFilterStatus] = useState("")
     let [sortOrder, setSortOrder] = useState("desc")
 
@@ -30,15 +31,20 @@ export default function ManageBills() {
     useEffect(() => { fetchBills() }, [])
 
     async function generateBills() {
+        if (!dueDate) {
+            toast.error("Please select a due date")
+            return
+        }
         let responseObject = await fetch("http://localhost:8080/api/v1/admin/bill/generate", {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ societyId: user.societyId, month, year })
+            body: JSON.stringify({ societyId: user.societyId, month, year, dueDate })
         })
         let responseData = await responseObject.json()
         if (responseObject.ok) {
             toast.success(responseData.message)
             fetchBills()
+            setDueDate("")
             document.getElementById("closeGenerateModal").click()
         } else {
             toast.error(responseData.message)
@@ -88,13 +94,15 @@ export default function ManageBills() {
                                 <th className="py-3 small">Month/Year</th>
                                 <th className="py-3 small">Flat Charge</th>
                                 <th className="py-3 small">Parking</th>
+                                <th className="py-3 small">Late Fee</th>
                                 <th className="py-3 small">Total</th>
+                                <th className="py-3 small">Due Date</th>
                                 <th className="py-3 small">Status</th>
                             </tr>
                         </thead>
                         <tbody className="table-group-divider">
                             {filteredBills.length === 0 ?
-                                <tr><td colSpan="7" className="text-center text-secondary py-4 small">No bills found</td></tr>
+                                <tr><td colSpan="9" className="text-center text-secondary py-4 small">No bills found</td></tr>
                                 :
                                 filteredBills.map((b, index) => {
                                     return (
@@ -104,7 +112,11 @@ export default function ManageBills() {
                                             <td className="small">{months[b.billMonth - 1]} {b.billYear}</td>
                                             <td className="small">₹{b.flatCharge}</td>
                                             <td className="small">₹{b.parkingCharge}</td>
+                                            <td className="small">
+                                                {b.lateFee > 0 ? <span className="text-danger fw-semibold">₹{b.lateFee}</span> : "—"}
+                                            </td>
                                             <td className="small fw-semibold">₹{b.totalAmount}</td>
+                                            <td className="small">{b.dueDate || "—"}</td>
                                             <td>
                                                 <span className={`badge ${b.status === "PAID" ? "bg-success" : b.status === "PARTIALLY_PAID" ? "bg-warning text-dark" : "bg-danger"}`}>
                                                     {b.status}
@@ -139,6 +151,12 @@ export default function ManageBills() {
                                 <label className="form-label small fw-medium">Year</label>
                                 <input type="number" className="form-control form-control-sm rounded-3"
                                     value={year} onChange={(e) => { setYear(parseInt(e.target.value)) }}
+                                />
+                            </div>
+                            <div className="mb-3">
+                                <label className="form-label small fw-medium">Due Date</label>
+                                <input type="date" className="form-control form-control-sm rounded-3"
+                                    value={dueDate} onChange={(e) => { setDueDate(e.target.value) }}
                                 />
                             </div>
                             <p className="small text-secondary">Bills will be generated for all occupied flats. Already existing bills for the same month/year will be skipped.</p>

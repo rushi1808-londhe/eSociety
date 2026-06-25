@@ -21,6 +21,8 @@ import ManageRates from './components/admin/ManageRates';
 import ManageBills from './components/admin/ManageBills';
 import ManageComplaints from './components/admin/ManageComplaints';
 import ManageNotices from './components/admin/ManageNotices';
+import ManagePayments from './components/admin/ManagePayments';
+import ManageFinance from './components/admin/ManageFinance';
 import ManageAdmins from './components/superadmin/ManageAdmins';
 import MyBills from './components/resident/MyBills';
 import MyPayments from './components/resident/MyPayments';
@@ -105,8 +107,16 @@ let myRoutes = createBrowserRouter([
         path: "notices",
         element: <ManageNotices />
       },
+      {
+        path: "payments",
+        element: <ManagePayments />
+      },
+      {
+        path: "finance",
+        element: <ManageFinance />
+      },
     ]
-  }, ,
+  },
   {
     path: '/resident',
     element: <ResidentApp />,

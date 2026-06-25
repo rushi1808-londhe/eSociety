@@ -26,21 +26,83 @@ export default function MyBills() {
         if (responseData.data) setBills(responseData.data)
     }
 
-    useEffect(() => { fetchBills() }, [])
+    useEffect(() => {
+        fetchBills()
+        // Load Razorpay checkout script
+        const script = document.createElement("script")
+        script.src = "https://checkout.razorpay.com/v1/checkout.js"
+        script.async = true
+        document.body.appendChild(script)
+        return () => { document.body.removeChild(script) }
+        // eslint-disable-next-line
+    }, [])
 
-    async function payBill() {
-        let responseObject = await fetch("http://localhost:8080/api/v1/resident/bills/pay", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ userId: String(user.userId), billId: String(selectedBill.billId) })
-        })
-        let responseData = await responseObject.json()
-        if (responseData.data === true) {
-            toast.success(responseData.message)
-            fetchBills()
+    async function initiatePayment() {
+        try {
+            // Step 1: Create Razorpay order on backend
+            let orderResponse = await fetch("http://localhost:8080/api/v1/resident/bills/create-order", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ userId: user.userId, billId: selectedBill.billId })
+            })
+            let orderData = await orderResponse.json()
+            if (!orderResponse.ok) {
+                toast.error(orderData.message)
+                return
+            }
+
+            let { razorpayOrderId, amount, keyId } = orderData.data
             document.getElementById("closePayModal").click()
-        } else {
-            toast.error(responseData.message)
+
+            // Step 2: Open Razorpay checkout popup
+            let options = {
+                key: keyId,
+                amount: amount * 100, // paise
+                currency: "INR",
+                name: "eSociety",
+                description: `Maintenance - ${months[selectedBill.billMonth - 1]} ${selectedBill.billYear}`,
+                order_id: razorpayOrderId,
+                handler: async function (response) {
+                    // Step 3: Verify on backend and mark bill paid
+                    let verifyResponse = await fetch("http://localhost:8080/api/v1/resident/bills/verify-payment", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                        body: JSON.stringify({
+                            userId: user.userId,
+                            billId: selectedBill.billId,
+                            razorpayOrderId: response.razorpay_order_id,
+                            razorpayPaymentId: response.razorpay_payment_id,
+                            razorpaySignature: response.razorpay_signature
+                        })
+                    })
+                    let verifyData = await verifyResponse.json()
+                    if (verifyResponse.ok) {
+                        toast.success("Payment successful!")
+                        fetchBills()
+                    } else {
+                        toast.error(verifyData.message || "Payment verification failed")
+                    }
+                },
+                prefill: {
+                    name: user.name || "",
+                    email: user.email || ""
+                },
+                theme: { color: "#272757" },
+                modal: {
+                    ondismiss: function () {
+                        toast.info("Payment cancelled")
+                    }
+                }
+            }
+
+            let rzp = new window.Razorpay(options)
+            rzp.on("payment.failed", function (response) {
+                toast.error("Payment failed: " + response.error.description)
+            })
+            rzp.open()
+
+        } catch (err) {
+            toast.error("Something went wrong. Please try again.")
         }
     }
 
@@ -82,23 +144,30 @@ export default function MyBills() {
                                 <th className="py-3 small">Month/Year</th>
                                 <th className="py-3 small">Flat Charge</th>
                                 <th className="py-3 small">Parking</th>
+                                <th className="py-3 small">Late Fee</th>
                                 <th className="py-3 small">Total</th>
+                                <th className="py-3 small">Due Date</th>
                                 <th className="py-3 small">Status</th>
                                 <th className="py-3 small">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="table-group-divider">
                             {filteredBills.length === 0 ?
-                                <tr><td colSpan="7" className="text-center text-secondary py-4 small">No bills found</td></tr>
+                                <tr><td colSpan="9" className="text-center text-secondary py-4 small">No bills found</td></tr>
                                 :
                                 filteredBills.map((b, index) => {
+                                    let isOverdue = b.status === "UNPAID" && b.dueDate && new Date(b.dueDate) < new Date()
                                     return (
                                         <tr key={b.billId}>
                                             <td className="ps-4 small">{index + 1}</td>
                                             <td className="small fw-semibold">{months[b.billMonth - 1]} {b.billYear}</td>
                                             <td className="small">₹{b.flatCharge}</td>
                                             <td className="small">₹{b.parkingCharge}</td>
+                                            <td className="small">
+                                                {b.lateFee > 0 ? <span className="text-danger fw-semibold">₹{b.lateFee}</span> : "—"}
+                                            </td>
                                             <td className="small fw-semibold">₹{b.totalAmount}</td>
+                                            <td className={`small ${isOverdue ? "text-danger fw-semibold" : ""}`}>{b.dueDate || "—"}</td>
                                             <td>
                                                 <span className={`badge ${b.status === "PAID" ? "bg-success" : b.status === "PARTIALLY_PAID" ? "bg-warning text-dark" : "bg-danger"}`}>
                                                     {b.status}
@@ -138,6 +207,9 @@ export default function MyBills() {
                                     <p className="small mb-1"><strong>Month:</strong> {months[selectedBill.billMonth - 1]} {selectedBill.billYear}</p>
                                     <p className="small mb-1"><strong>Flat Charge:</strong> ₹{selectedBill.flatCharge}</p>
                                     <p className="small mb-1"><strong>Parking Charge:</strong> ₹{selectedBill.parkingCharge}</p>
+                                    {selectedBill.lateFee > 0 &&
+                                        <p className="small mb-1 text-danger"><strong>Late Fee:</strong> ₹{selectedBill.lateFee}</p>
+                                    }
                                     <p className="small mb-0 fw-bold"><strong>Total Amount:</strong> ₹{selectedBill.totalAmount}</p>
                                 </div>
                             }
@@ -145,8 +217,8 @@ export default function MyBills() {
                         <div className="modal-footer border-0">
                             <button type="button" className="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
                             <button type="button" className="btn btn-sm text-white" style={{ background: "#272757" }}
-                                onClick={() => { payBill() }}>
-                                <i className="bi bi-check-circle me-1"></i>Confirm Payment
+                                onClick={() => { initiatePayment() }}>
+                                <i className="bi bi-credit-card me-1"></i>Pay ₹{selectedBill?.totalAmount}
                             </button>
                         </div>
                     </div>

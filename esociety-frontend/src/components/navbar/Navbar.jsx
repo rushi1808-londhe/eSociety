@@ -16,6 +16,8 @@ const adminLinks = [
     { path: "/admin/bills", label: "Bills", icon: "bi-receipt" },
     { path: "/admin/complaints", label: "Complaints", icon: "bi-exclamation-circle" },
     { path: "/admin/notices", label: "Notices", icon: "bi-megaphone" },
+    { path: "/admin/payments", label: "Payments", icon: "bi-credit-card" },
+    { path: "/admin/finance", label: "Finance", icon: "bi-graph-up" },
 ];
 
 const residentLinks = [

@@ -24,6 +24,8 @@ public class ResidentService {
     private final ComplaintRepository complaintRepository;
     private final NoticeRepository noticeRepository;
     private final UniversalResponse universalResponse;
+    private final LateFeeService lateFeeService;
+    private final RazorpayService razorpayService;
 
     // ===== DASHBOARD =====
     public ResponseEntity<?> getDashboardStats(Long userId) {
@@ -64,6 +66,7 @@ public class ResidentService {
                     .orElseThrow(() -> new RuntimeException("Resident not found"));
 
             List<MaintenanceBill> bills = maintenanceBillRepository.findByFlatId(resident.getFlatId());
+            lateFeeService.applyLateFees(bills, resident.getSocietyId());
             return universalResponse.send("Bills fetched successfully", bills, HttpStatus.OK);
         } catch (Exception e) {
             return universalResponse.send("Something went wrong: " + e.getMessage(), null, HttpStatus.INTERNAL_SERVER_ERROR);
@@ -84,7 +87,10 @@ public class ResidentService {
     }
 
     // Pay Bill
-    public ResponseEntity<?> payBill(Long userId, Long billId) {
+    // ===== PAYMENT =====
+
+    // Step 1: Create a Razorpay order and return orderId + amount + keyId to frontend
+    public ResponseEntity<?> createOrder(Long userId, Long billId) {
         try {
             Resident resident = residentRepository.findByUserId(userId)
                     .orElseThrow(() -> new RuntimeException("Resident not found"));
@@ -96,17 +102,54 @@ public class ResidentService {
                 return universalResponse.send("Bill is already paid", null, HttpStatus.CONFLICT);
             }
 
-            // Create payment
+            lateFeeService.applyLateFees(List.of(bill), resident.getSocietyId());
+
+            String razorpayOrderId = razorpayService.createOrder(
+                    bill.getTotalAmount(),
+                    "BILL-" + billId
+            );
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("razorpayOrderId", razorpayOrderId);
+            response.put("amount", bill.getTotalAmount());
+            response.put("keyId", razorpayService.getKeyId());
+            response.put("billId", billId);
+
+            return universalResponse.send("Order created successfully", response, HttpStatus.OK);
+        } catch (Exception e) {
+            return universalResponse.send("Could not create payment order: " + e.getMessage(), null, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    // Step 2: Verify Razorpay signature, then mark bill as paid
+    public ResponseEntity<?> verifyAndPay(Long userId, Long billId, String razorpayOrderId,
+                                           String razorpayPaymentId, String razorpaySignature) {
+        try {
+            boolean valid = razorpayService.verifySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature);
+            if (!valid) {
+                return universalResponse.send("Payment verification failed. Possible tampered request.", null, HttpStatus.BAD_REQUEST);
+            }
+
+            Resident resident = residentRepository.findByUserId(userId)
+                    .orElseThrow(() -> new RuntimeException("Resident not found"));
+
+            MaintenanceBill bill = maintenanceBillRepository.findById(billId)
+                    .orElseThrow(() -> new RuntimeException("Bill not found"));
+
+            if (bill.getStatus() == BillStatus.PAID) {
+                return universalResponse.send("Bill is already paid", null, HttpStatus.CONFLICT);
+            }
+
             Payment payment = new Payment();
             payment.setSocietyId(resident.getSocietyId());
             payment.setBillId(billId);
             payment.setResidentId(resident.getResidentId());
             payment.setAmountPaid(bill.getTotalAmount());
             payment.setPaymentDate(LocalDate.now().toString());
+            payment.setGatewayTxnId(razorpayPaymentId);
             payment.setStatus(com.esociety.backend.enums.PaymentStatus.SUCCESS);
             paymentRepository.save(payment);
 
-            // Update bill status
             bill.setStatus(BillStatus.PAID);
             maintenanceBillRepository.save(bill);
 
@@ -148,6 +191,20 @@ public class ResidentService {
         } catch (Exception e) {
             return universalResponse.send("Something went wrong: " + e.getMessage(), null, HttpStatus.INTERNAL_SERVER_ERROR);
         }
+    }
+
+    // ===== PAYMENT RECEIPT =====
+    public Payment getOwnedPayment(Long userId, Long paymentId) {
+        Resident resident = residentRepository.findByUserId(userId)
+                .orElseThrow(() -> new RuntimeException("Resident not found"));
+
+        Payment payment = paymentRepository.findById(paymentId)
+                .orElseThrow(() -> new RuntimeException("Payment not found"));
+
+        if (!payment.getResidentId().equals(resident.getResidentId())) {
+            throw new RuntimeException("You are not authorized to access this receipt");
+        }
+        return payment;
     }
 
     // ===== MY NOTICES =====

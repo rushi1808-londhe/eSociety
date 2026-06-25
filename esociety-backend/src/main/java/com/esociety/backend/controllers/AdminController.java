@@ -2,7 +2,10 @@ package com.esociety.backend.controllers;
 
 import com.esociety.backend.entities.*;
 import com.esociety.backend.services.AdminService;
+import com.esociety.backend.services.PdfService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -15,6 +18,7 @@ import java.util.Map;
 public class AdminController {
 
     private final AdminService adminService;
+    private final PdfService pdfService;
 
     // ===== DASHBOARD =====
     @GetMapping("/dashboard/{societyId}")
@@ -130,7 +134,8 @@ public class AdminController {
         return adminService.generateBills(
             Long.parseLong(request.get("societyId").toString()),
             Integer.parseInt(request.get("month").toString()),
-            Integer.parseInt(request.get("year").toString())
+            Integer.parseInt(request.get("year").toString()),
+            (String) request.get("dueDate")
         );
     }
 
@@ -174,5 +179,70 @@ public class AdminController {
     @PutMapping("/resident/toggle/{id}")
     public ResponseEntity<?> toggleResidentStatus(@PathVariable Long id) {
         return adminService.toggleResidentStatus(id);
+    }
+
+    // ===== PAYMENTS =====
+    @GetMapping("/payment/all/{societyId}")
+    public ResponseEntity<?> getAllPayments(@PathVariable Long societyId) {
+        return adminService.getAllPayments(societyId);
+    }
+
+    @GetMapping("/payment/{societyId}/receipt/{paymentId}")
+    public ResponseEntity<?> downloadReceipt(@PathVariable Long societyId, @PathVariable Long paymentId) {
+        try {
+            Payment payment = adminService.getOwnedPayment(societyId, paymentId);
+            byte[] pdfBytes = pdfService.generateReceipt(payment.getPaymentId());
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_PDF);
+            headers.setContentDispositionFormData("attachment", "receipt-" + paymentId + ".pdf");
+
+            return ResponseEntity.ok().headers(headers).body(pdfBytes);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    // ===== LATE FEE RULE =====
+    @PostMapping("/latefee/save")
+    public ResponseEntity<?> saveLateFeeRule(@RequestBody Map<String, Object> request) {
+        return adminService.saveLateFeeRule(
+            Long.parseLong(request.get("societyId").toString()),
+            Double.parseDouble(request.get("flatAmount").toString())
+        );
+    }
+
+    @GetMapping("/latefee/{societyId}")
+    public ResponseEntity<?> getLateFeeRule(@PathVariable Long societyId) {
+        return adminService.getLateFeeRule(societyId);
+    }
+
+    // ===== EXPENSES =====
+    @PostMapping("/expense/add")
+    public ResponseEntity<?> addExpense(@RequestBody Map<String, Object> request) {
+        return adminService.addExpense(
+            Long.parseLong(request.get("societyId").toString()),
+            (String) request.get("category"),
+            (String) request.get("description"),
+            Double.parseDouble(request.get("amount").toString()),
+            (String) request.get("expenseDate"),
+            Long.parseLong(request.get("recordedByAdminId").toString())
+        );
+    }
+
+    @GetMapping("/expense/all/{societyId}")
+    public ResponseEntity<?> getAllExpenses(@PathVariable Long societyId) {
+        return adminService.getAllExpenses(societyId);
+    }
+
+    @DeleteMapping("/expense/delete/{id}")
+    public ResponseEntity<?> deleteExpense(@PathVariable Long id) {
+        return adminService.deleteExpense(id);
+    }
+
+    // ===== REVENUE / P&L =====
+    @GetMapping("/revenue/{societyId}/{year}")
+    public ResponseEntity<?> getRevenueReport(@PathVariable Long societyId, @PathVariable Integer year) {
+        return adminService.getRevenueReport(societyId, year);
     }
 }
